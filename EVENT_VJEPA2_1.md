@@ -51,6 +51,24 @@ TensorBoard scalars are written by rank 0 under the run folder:
 tensorboard --logdir /path/to/run/folder/tensorboard --port 6006 --bind_all
 ```
 
+## Training Data And Mask Visualization
+
+Before trusting a loss curve, inspect the exact event clips and masks used by the training config:
+
+```bash
+python -m scripts.train.visualize_event_training \
+  --fname configs/train_2_1/event/vitb16-h480w640-bins-t10.yaml \
+  --output-dir /mnt/data/apollo-22/vjepa2_debug/mask_debug \
+  --num-samples 8 \
+  --num-draws 2 \
+  --sampling random \
+  --max-frames 10
+```
+
+This writes per-sample PNGs, `contact_sheet.png`, `summary.txt`, and `resolved_config.yaml`.
+The PNGs show activity, polarity, context masks, and predictor masks after the same event transform
+and `MaskCollator` path used by training.
+
 The 480x640 configs pad smaller datasets to `[480, 640]`. The 240x320 configs assume the H5 inputs
 are already at half scale or smaller when `preserve_input_size: true`.
 
