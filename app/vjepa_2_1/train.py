@@ -14,6 +14,7 @@ except Exception:
 
 import copy
 import gc
+import pprint
 import random
 import time
 
@@ -111,6 +112,12 @@ def main(args, resume_preempt=False):
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
     sync_gc = cfgs_meta.get("sync_gc", False)
+    use_tensorboard = cfgs_meta.get("tensorboard", False)
+    tensorboard_log_dir = cfgs_meta.get("tensorboard_log_dir", None)
+    tensorboard_log_freq = int(cfgs_meta.get("tensorboard_log_freq", log_freq))
+    tensorboard_flush_secs = int(cfgs_meta.get("tensorboard_flush_secs", 30))
+    if tensorboard_log_freq <= 0:
+        tensorboard_log_freq = 1
     logger.info(f"LD_PRELOAD: {os.environ.get('LD_PRELOAD')}")
     which_dtype = cfgs_meta.get("dtype")
     logger.info(f"{which_dtype=}")
@@ -422,6 +429,14 @@ def main(args, resume_preempt=False):
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
     )
+    tb_writer = None
+    if rank == 0 and use_tensorboard:
+        from torch.utils.tensorboard import SummaryWriter
+
+        tb_log_dir = tensorboard_log_dir or os.path.join(folder, "tensorboard")
+        tb_writer = SummaryWriter(log_dir=tb_log_dir, flush_secs=tensorboard_flush_secs)
+        logger.info(f"Writing TensorBoard logs to {tb_log_dir}")
+        tb_writer.add_text("config", f"```\n{pprint.pformat(args)}\n```", 0)
 
     # -- init model
     encoder, predictor = init_video_model(
@@ -839,6 +854,8 @@ def main(args, resume_preempt=False):
                             return loss
 
                 # Step 1. Forward
+                loss_context = None
+                lambda_value_step = 0.0
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
                     h = forward_target(clips)
                     z_pred, z_context = forward_context(clips)
@@ -915,11 +932,22 @@ def main(args, resume_preempt=False):
                     torch._foreach_mul_(params_k, m)
                     torch._foreach_add_(params_k, params_q, alpha=1 - m)
 
+                train_metrics = {
+                    "loss_pred": float(loss_pred.detach().float().item()),
+                    "loss_context": (
+                        None
+                        if loss_context is None
+                        else float(loss_context.detach().float().item())
+                    ),
+                    "lambda_context": float(lambda_value_step),
+                    "momentum": float(m),
+                }
                 return (
-                    float(loss),
+                    float(loss.detach().float().item()),
                     _new_lr,
                     _new_wd,
                     run_step,
+                    train_metrics,
                 )
 
             (
@@ -927,6 +955,7 @@ def main(args, resume_preempt=False):
                 _new_lr,
                 _new_wd,
                 run_step,
+                train_metrics,
             ), gpu_etime_ms = gpu_timer(train_step)
             iter_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
             loss_meter.update(loss)
@@ -990,6 +1019,57 @@ def main(args, resume_preempt=False):
                             data_elapsed_time_meter.avg,
                         )
                     )
+                if tb_writer is not None and (
+                    (global_update_count % tensorboard_log_freq == 0)
+                    or (itr == ipe - 1)
+                    or np.isnan(loss)
+                    or np.isinf(loss)
+                ):
+                    tb_writer.add_scalar("train/loss", loss, global_update_count)
+                    tb_writer.add_scalar(
+                        "train/loss_avg", loss_meter.avg, global_update_count
+                    )
+                    tb_writer.add_scalar("train/lr", _new_lr, global_update_count)
+                    tb_writer.add_scalar("train/weight_decay", _new_wd, global_update_count)
+                    tb_writer.add_scalar("train/run_step", int(run_step), global_update_count)
+                    tb_writer.add_scalar(
+                        "train/iter_time_ms",
+                        iter_elapsed_time_ms,
+                        global_update_count,
+                    )
+                    tb_writer.add_scalar("train/gpu_time_ms", gpu_etime_ms, global_update_count)
+                    tb_writer.add_scalar(
+                        "train/data_time_ms",
+                        data_elapsed_time_ms,
+                        global_update_count,
+                    )
+                    tb_writer.add_scalar(
+                        "train/loss_pred",
+                        train_metrics["loss_pred"],
+                        global_update_count,
+                    )
+                    tb_writer.add_scalar(
+                        "train/lambda_context",
+                        train_metrics["lambda_context"],
+                        global_update_count,
+                    )
+                    tb_writer.add_scalar("train/momentum", train_metrics["momentum"], global_update_count)
+                    if train_metrics["loss_context"] is not None:
+                        tb_writer.add_scalar(
+                            "train/loss_context",
+                            train_metrics["loss_context"],
+                            global_update_count,
+                        )
+                    if torch.cuda.is_available():
+                        tb_writer.add_scalar(
+                            "system/max_memory_allocated_mb",
+                            torch.cuda.max_memory_allocated() / 1024.0**2,
+                            global_update_count,
+                        )
+                    for fpc, meter in mask_meters.items():
+                        tb_writer.add_scalar(
+                            f"masks/fpc_{fpc}", meter.avg, global_update_count
+                        )
 
             log_stats()
             assert not np.isnan(loss), "loss is nan"
@@ -1000,6 +1080,10 @@ def main(args, resume_preempt=False):
 
         # -- Save Checkpoint
         logger.info("avg. loss %.3f" % loss_meter.avg)
+        if tb_writer is not None:
+            tb_writer.add_scalar("epoch/loss_avg", loss_meter.avg, epoch + 1)
+            tb_writer.add_scalar("epoch/global_update", global_update_count, epoch + 1)
+            tb_writer.flush()
         if (epoch + 1) % checkpoint_freq == 0 or epoch == (num_epochs - 1):
             save_checkpoint(epoch + 1, latest_path)
             if save_every_freq > 0 and (epoch + 1) % save_every_freq == 0:
@@ -1011,3 +1095,6 @@ def main(args, resume_preempt=False):
             logger.info(f"Reached total_updates={total_updates}; stopping training.")
             save_checkpoint(epoch + 1, latest_path)
             break
+
+    if tb_writer is not None:
+        tb_writer.close()

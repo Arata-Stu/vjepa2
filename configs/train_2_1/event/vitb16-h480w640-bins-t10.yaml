@@ -79,6 +79,10 @@ meta:
   seed: 239
   use_sdpa: true
   sync_gc: false
+  tensorboard: true
+  tensorboard_log_dir: null
+  tensorboard_log_freq: 10
+  tensorboard_flush_secs: 30
 
 model:
   model_name: vit_base
