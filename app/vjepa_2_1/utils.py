@@ -183,6 +183,7 @@ def load_checkpoint(
 
 def init_video_model(
     device,
+    in_chans=3,
     patch_size=16,
     max_num_frames=16,
     tubelet_size=2,
@@ -216,6 +217,7 @@ def init_video_model(
     encoder = video_vit.__dict__[model_name](
         img_size=crop_size,
         patch_size=patch_size,
+        in_chans=in_chans,
         num_frames=max_num_frames,
         tubelet_size=tubelet_size,
         uniform_power=uniform_power,
@@ -296,6 +298,8 @@ def init_opt(
     betas=(0.9, 0.999),
     eps=1e-8,
     zero_init_bias_wd=True,
+    warmup_steps=None,
+    total_steps=None,
 ):
     param_groups = [
         {
@@ -341,27 +345,41 @@ def init_opt(
         logger.info("Using AdamW")
         optimizer = torch.optim.AdamW(param_groups, betas=betas, eps=eps)
 
+    if total_steps is None:
+        total_steps = int(ipe_scale * num_epochs * iterations_per_epoch)
+    else:
+        total_steps = int(total_steps)
+    if total_steps <= 0:
+        raise ValueError(f"total_steps must be > 0, got {total_steps}")
+
+    if warmup_steps is None:
+        warmup_steps = int(warmup * iterations_per_epoch)
+    else:
+        warmup_steps = int(warmup_steps)
+    if warmup_steps < 0:
+        raise ValueError(f"warmup_steps must be >= 0, got {warmup_steps}")
+
     if not is_anneal:
         scheduler = WarmupCosineSchedule(
             optimizer,
-            warmup_steps=int(warmup * iterations_per_epoch),
+            warmup_steps=warmup_steps,
             start_lr=start_lr,
             ref_lr=ref_lr,
             final_lr=final_lr,
-            T_max=int(ipe_scale * num_epochs * iterations_per_epoch),
+            T_max=total_steps,
         )
     else:
         scheduler = LinearDecaySchedule(
             optimizer,
             ref_lr=ref_lr,
             final_lr=final_lr,
-            T_max=int(ipe_scale * num_epochs * iterations_per_epoch),
+            T_max=total_steps,
         )
     wd_scheduler = CosineWDSchedule(
         optimizer,
         ref_wd=wd,
         final_wd=final_wd,
-        T_max=int(ipe_scale * num_epochs * iterations_per_epoch),
+        T_max=total_steps,
     )
 
     scaler = torch.cuda.amp.GradScaler() if mixed_precision else None

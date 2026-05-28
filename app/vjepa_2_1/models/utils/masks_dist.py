@@ -41,19 +41,32 @@ def separate_positions(ids, H_patches=None, W_patches=None, grid_size=None):
     return 1.0 * frame_ids, 1.0 * height_ids, 1.0 * width_ids
 
 
-def compute_mask_distance(masks_pred, masks_enc, grid_size, offset_context_loss):
+def compute_mask_distance(
+    masks_pred,
+    masks_enc,
+    grid_size=None,
+    offset_context_loss=False,
+    h_patches=None,
+    w_patches=None,
+):
     # masks_pred: [fpc][mask] where each mask is [B, N_pred]
     # masks_enc: [fpc][mask] where each mask is [B, N_enc]
+    if h_patches is None or w_patches is None:
+        if grid_size is None:
+            raise ValueError("Either grid_size or (h_patches, w_patches) must be set")
+        h_patches = int(grid_size)
+        w_patches = int(grid_size)
+
     distances = []
     for masks_pred_i, masks_enc_i in zip(masks_pred, masks_enc):
         row_distances = []
         for masks_pred_ij, masks_enc_ij in zip(masks_pred_i, masks_enc_i):
             N_enc_tokens = masks_enc_ij.shape[1]
             d_enc, h_enc, w_enc = separate_positions(
-                masks_enc_ij, grid_size=grid_size
+                masks_enc_ij, H_patches=h_patches, W_patches=w_patches
             )  # (BS, N_enc)
             d_pred, h_pred, w_pred = separate_positions(
-                masks_pred_ij, grid_size=grid_size
+                masks_pred_ij, H_patches=h_patches, W_patches=w_patches
             )  # (BS, N_pred)
             pred = torch.stack([d_pred, h_pred, w_pred], dim=-1)  # (BS, N_pred, 3)
             enc_distances = []
@@ -67,7 +80,8 @@ def compute_mask_distance(masks_pred, masks_enc, grid_size, offset_context_loss)
                 dist = torch.cdist(enc_position, pred, p=2)  # (BS, N_enc)
                 dmin, argmin = dist.min(dim=-1)
                 if offset_context_loss:
-                    coeff = grid_size // 16  # Which is the default value of grid_size
+                    coeff = max(h_patches, w_patches) // 16
+                    coeff = max(coeff, 1)
                     dmin = dmin * (1.0 / coeff)
                 dmin = dmin**0.5  # We want that it decreases less agressive
                 enc_distances.append(dmin)

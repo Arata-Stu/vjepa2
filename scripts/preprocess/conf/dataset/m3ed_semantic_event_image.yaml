@@ -1,0 +1,53 @@
+name: m3ed
+
+dataset_root: /mnt/ssd-4tb/dataset/m3ed_left_event
+output_root: /mnt/ssd-4tb/dataset/m3ed_semantic_event_image
+
+output_suffix: _voxels_semantic.h5
+output_subdir: null
+overwrite: false
+
+input_height: 720
+input_width: 1280
+output_height: 720
+output_width: 1280
+downsample_factor: 2
+
+t_bins: 1
+representation: event_image
+event_image_percentile: 99.0
+save_mp4: true
+mp4_fps: null
+split_polarity: true
+accum_time: 50000
+stride_time: null
+start_time_us: null
+
+window_mode: semantics_middle
+filter_known_semantic_sequences: true
+filter_known_depth_sequences: true
+semantics_ts_source: auto
+semantics_ts_divisor: 1
+depth_ts_source: auto
+depth_ts_divisor: 1
+
+normalize: true
+output_dtype: float16
+use_trilinear: false
+tmp_suffix: .tmp
+num_processes: 1
+
+activity_mode: full
+activity_spatial_patch_size: 16
+activity_temporal_patch_size: 2
+
+split_chunk_duration_s: 20
+split_output_root: /media/aten-22/AT_2TB/dataset/m3ed_semantic_event_image_20s
+split_copy_batch_size: 8
+split_min_windows_per_chunk: 1
+split_chunk_index_pad: 4
+split_metadata_mode: full
+split_progress_interval_s: 0.0
+split_log_chunk_progress: false
+split_log_dataset_progress: false
+split_delete_source_after_success: true

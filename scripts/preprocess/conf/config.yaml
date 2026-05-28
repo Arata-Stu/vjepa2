@@ -1,0 +1,8 @@
+defaults:
+  - dataset: m3ed
+  - _self_
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null

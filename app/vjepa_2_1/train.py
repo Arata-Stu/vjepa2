@@ -31,6 +31,7 @@ from app.vjepa_2_1.utils import (
     normalize_nested,
 )
 from src.datasets.data_manager import init_data
+from src.datasets.event_transforms import make_event_transforms
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
 from src.utils.distributed import init_distributed
@@ -54,6 +55,46 @@ torch.backends.cudnn.benchmark = True
 logger = get_logger(__name__, force=True)
 
 
+def _ensure_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _to_hw_tuple(value, field_name="crop_size"):
+    if isinstance(value, int):
+        return (int(value), int(value))
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (int(value[0]), int(value[1]))
+    raise ValueError(f"{field_name} must be int or [H, W], got: {value}")
+
+
+def _ceil_div(a, b):
+    if int(b) <= 0:
+        raise ValueError("divisor must be > 0")
+    return (int(a) + int(b) - 1) // int(b)
+
+
+def _is_event_dataset(dataset_type):
+    return str(dataset_type).lower() in {"eventdataset", "eventvoxel", "eventh5dataset"}
+
+
+def _resolve_interpolation(mode):
+    from torchvision.transforms import InterpolationMode
+
+    lookup = {
+        "nearest": InterpolationMode.NEAREST,
+        "bilinear": InterpolationMode.BILINEAR,
+        "bicubic": InterpolationMode.BICUBIC,
+    }
+    key = str(mode).lower()
+    if key not in lookup:
+        raise ValueError(f"unsupported interpolation: {mode}")
+    return lookup[key]
+
+
 def main(args, resume_preempt=False):
     # ----------------------------------------------------------------------- #
     #  PASSED IN PARAMS FROM CONFIG FILE
@@ -66,6 +107,7 @@ def main(args, resume_preempt=False):
     r_file = cfgs_meta.get("read_checkpoint", None)
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
+    checkpoint_freq = cfgs_meta.get("checkpoint_freq", CHECKPOINT_FREQ)
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
     sync_gc = cfgs_meta.get("sync_gc", False)
@@ -90,6 +132,7 @@ def main(args, resume_preempt=False):
     compile_model = cfgs_model.get("compile_model", False)
     use_activation_checkpointing = cfgs_model.get("use_activation_checkpointing", False)
     model_name = cfgs_model.get("model_name")
+    in_chans = int(cfgs_model.get("in_chans", 3))
     pred_depth = cfgs_model.get("pred_depth")
     pred_num_heads = cfgs_model.get("pred_num_heads", None)
     pred_embed_dim = cfgs_model.get("pred_embed_dim")
@@ -114,7 +157,13 @@ def main(args, resume_preempt=False):
     normalize_predictor = cfgs_model.get("normalize_predictor", False)
     modality_embedding = cfgs_model.get("modality_embedding", False)
     levels_predictor = cfgs_model.get("levels_predictor", 4)
-    if model_name == "vit_large":
+    if model_name == "vit_tiny":
+        embed_dim_encoder = 192
+    elif model_name == "vit_small":
+        embed_dim_encoder = 384
+    elif model_name == "vit_base":
+        embed_dim_encoder = 768
+    elif model_name == "vit_large":
         embed_dim_encoder = 1024
     elif model_name == "vit_giant_xformers":
         embed_dim_encoder = 1408
@@ -130,14 +179,39 @@ def main(args, resume_preempt=False):
     datasets_weights = cfgs_data.get("datasets_weights")
     dataset_fpcs = cfgs_data.get("dataset_fpcs")
     max_num_frames = max(dataset_fpcs)
+    source_window_fpcs = cfgs_data.get("source_window_fpcs", None)
+    voxel_time_mode = cfgs_data.get("voxel_time_mode", "channels")
+    voxel_temporal_bins = cfgs_data.get("voxel_temporal_bins", None)
     batch_size = cfgs_data.get("batch_size")
     tubelet_size = cfgs_data.get("tubelet_size")
     fps = cfgs_data.get("fps")
     crop_size = cfgs_data.get("crop_size", 224)
     patch_size = cfgs_data.get("patch_size")
-    grid_size = crop_size // patch_size
+    crop_hw = _to_hw_tuple(crop_size, "data.crop_size")
+    grid_h = crop_hw[0] // patch_size
+    grid_w = crop_hw[1] // patch_size
+    grid_size = grid_h if grid_h == grid_w else None
     pin_mem = cfgs_data.get("pin_mem", False)
     num_workers = cfgs_data.get("num_workers", 1)
+    persistent_workers = cfgs_data.get("persistent_workers", False)
+    prefetch_factor = cfgs_data.get("prefetch_factor", None)
+    max_open_h5_files = cfgs_data.get("max_open_h5_files", 32)
+    frame_sample_rate = cfgs_data.get("frame_sample_rate", None)
+    file_pattern = cfgs_data.get("file_pattern", "*.h5")
+    recursive = cfgs_data.get("recursive", True)
+    activity_filter_enabled = cfgs_data.get("activity_filter_enabled", False)
+    activity_filter_min_clip_mean_active_pixel_ratio = cfgs_data.get(
+        "activity_filter_min_clip_mean_active_pixel_ratio", None
+    )
+    activity_filter_min_clip_mean_activity_score = cfgs_data.get(
+        "activity_filter_min_clip_mean_activity_score", None
+    )
+    activity_filter_min_clip_active_window_ratio = cfgs_data.get(
+        "activity_filter_min_clip_active_window_ratio", None
+    )
+    activity_filter_active_window_threshold = cfgs_data.get(
+        "activity_filter_active_window_threshold", None
+    )
 
     # -- IMG DATA
     cfgs_img_data = args.get("img_data")
@@ -161,6 +235,10 @@ def main(args, resume_preempt=False):
     motion_shift = cfgs_data_aug.get("motion_shift", False)
     reprob = cfgs_data_aug.get("reprob", 0.0)
     use_aa = cfgs_data_aug.get("auto_augment", False)
+    preserve_input_size = cfgs_data_aug.get("preserve_input_size", False)
+    pad_to_hw = cfgs_data_aug.get("pad_to_hw", None)
+    pad_value = cfgs_data_aug.get("pad_value", 0.0)
+    interpolation = cfgs_data_aug.get("interpolation", "bilinear")
 
     # -- LOSS
     cfgs_loss = args.get("loss")
@@ -179,7 +257,10 @@ def main(args, resume_preempt=False):
     resume_anneal = cfgs_opt.get("resume_anneal", False) or (
         is_anneal and resume_preempt
     )
-    ipe = cfgs_opt.get("ipe", None)
+    ipe = cfgs_opt.get("updates_per_epoch", cfgs_opt.get("ipe", None))
+    samples_per_epoch = cfgs_opt.get("samples_per_epoch", None)
+    total_updates = cfgs_opt.get("total_updates", None)
+    warmup_updates = cfgs_opt.get("warmup_updates", None)
     ipe_scale = cfgs_opt.get("ipe_scale", 1.0)
     wd = float(cfgs_opt.get("weight_decay"))
     final_wd = float(cfgs_opt.get("final_weight_decay"))
@@ -197,6 +278,20 @@ def main(args, resume_preempt=False):
     loss_reg_min_epoch = cfgs_opt.get("loss_reg_min_epoch", 50)
     if loss_reg_std_mult is not None:
         logger.info("Loss regulation activated")
+    if ipe is not None:
+        ipe = int(ipe)
+    if samples_per_epoch is not None:
+        samples_per_epoch = int(samples_per_epoch)
+        if samples_per_epoch <= 0:
+            raise ValueError("optimization.samples_per_epoch must be > 0")
+    if total_updates is not None:
+        total_updates = int(total_updates)
+        if total_updates <= 0:
+            raise ValueError("optimization.total_updates must be > 0")
+    if warmup_updates is not None:
+        warmup_updates = int(warmup_updates)
+        if warmup_updates < 0:
+            raise ValueError("optimization.warmup_updates must be >= 0")
     # ----------------------------------------------------------------------- #
 
     np.random.seed(seed)
@@ -237,7 +332,10 @@ def main(args, resume_preempt=False):
 
         if rank < int(world_size * img_rank_ratio):
             crop_size = cfgs_img_data.get("crop_size", 512)
-            grid_size = crop_size // patch_size
+            crop_hw = _to_hw_tuple(crop_size, "img_data.crop_size")
+            grid_h = crop_hw[0] // patch_size
+            grid_w = crop_hw[1] // patch_size
+            grid_size = grid_h if grid_h == grid_w else None
 
         if rank < int(world_size * img_rank_ratio):
             logger.info(
@@ -332,11 +430,12 @@ def main(args, resume_preempt=False):
         num_mask_tokens=int(len(model_cfgs_mask) * len(model_fpcs)),
         zero_init_mask_tokens=zero_init_mask_tokens,
         device=device,
+        in_chans=in_chans,
         patch_size=patch_size,
         max_num_frames=max_num_frames,
         tubelet_size=model_tubelet_size,
         model_name=model_name,
-        crop_size=crop_size,
+        crop_size=crop_hw,
         pred_depth=pred_depth,
         pred_num_heads=pred_num_heads,
         pred_embed_dim=pred_embed_dim,
@@ -370,20 +469,33 @@ def main(args, resume_preempt=False):
     mask_collator = MaskCollator(
         cfgs_mask=cfgs_mask,
         dataset_fpcs=dataset_fpcs,
-        crop_size=crop_size,
+        crop_size=crop_hw,
         patch_size=patch_size,
         tubelet_size=tubelet_size,
     )
 
-    transform = make_transforms(
-        random_horizontal_flip=True,
-        random_resize_aspect_ratio=ar_range,
-        random_resize_scale=rr_scale,
-        reprob=reprob,
-        auto_augment=use_aa,
-        motion_shift=motion_shift,
-        crop_size=crop_size,
-    )
+    if _is_event_dataset(dataset_type):
+        transform = make_event_transforms(
+            random_horizontal_flip=True,
+            random_resize_aspect_ratio=tuple(ar_range),
+            random_resize_scale=tuple(rr_scale),
+            crop_size=crop_hw,
+            interpolation=_resolve_interpolation(interpolation),
+            antialias=True,
+            apply_random_resized_crop=not preserve_input_size,
+            pad_to_hw=None if pad_to_hw is None else _to_hw_tuple(pad_to_hw, "data_aug.pad_to_hw"),
+            pad_value=pad_value,
+        )
+    else:
+        transform = make_transforms(
+            random_horizontal_flip=True,
+            random_resize_aspect_ratio=ar_range,
+            random_resize_scale=rr_scale,
+            reprob=reprob,
+            auto_augment=use_aa,
+            motion_shift=motion_shift,
+            crop_size=crop_size,
+        )
 
     # -- init data-loaders/samplers
     (unsupervised_loader, unsupervised_sampler) = init_data(
@@ -393,6 +505,10 @@ def main(args, resume_preempt=False):
         training=True,
         # clip_len=clip_len,
         dataset_fpcs=dataset_fpcs,
+        source_window_fpcs=source_window_fpcs,
+        voxel_time_mode=voxel_time_mode,
+        voxel_temporal_bins=voxel_temporal_bins,
+        frame_sample_rate=frame_sample_rate,
         fps=fps,
         transform=transform,
         rank=data_rank,
@@ -401,6 +517,16 @@ def main(args, resume_preempt=False):
         collator=mask_collator,
         num_workers=num_workers,
         pin_mem=pin_mem,
+        persistent_workers=persistent_workers,
+        prefetch_factor=prefetch_factor,
+        max_open_h5_files=max_open_h5_files,
+        file_pattern=file_pattern,
+        recursive=recursive,
+        activity_filter_enabled=activity_filter_enabled,
+        activity_filter_min_clip_mean_active_pixel_ratio=activity_filter_min_clip_mean_active_pixel_ratio,
+        activity_filter_min_clip_mean_activity_score=activity_filter_min_clip_mean_activity_score,
+        activity_filter_min_clip_active_window_ratio=activity_filter_min_clip_active_window_ratio,
+        activity_filter_active_window_threshold=activity_filter_active_window_threshold,
         log_dir=None,
     )
     try:
@@ -411,9 +537,25 @@ def main(args, resume_preempt=False):
         except Exception:
             _dlen = -1
     if ipe is None:
-        ipe = _dlen
+        if samples_per_epoch is not None:
+            global_batch_size = int(batch_size) * int(data_world_size)
+            ipe = _ceil_div(samples_per_epoch, global_batch_size)
+        else:
+            ipe = _dlen
+    if ipe is None or ipe <= 0:
+        raise ValueError(f"optimization.ipe/updates_per_epoch must be > 0, got {ipe}, loader_len={_dlen}")
+    scheduler_total_steps = None
+    if total_updates is not None:
+        scheduler_total_steps = int(total_updates)
+        num_epochs = _ceil_div(total_updates, ipe)
+        ipe_scale = 1.0
+    scheduler_warmup_steps = warmup_updates
     logger.info(f"Using batch size of {batch_size}, fpcs of {dataset_fpcs}")
-    logger.info(f"iterations per epoch/dataset length: {ipe}/{_dlen}")
+    logger.info(
+        f"iterations per epoch/dataset length: {ipe}/{_dlen}; "
+        f"total_updates={total_updates}, warmup_updates={warmup_updates}, "
+        f"samples_per_epoch={samples_per_epoch}"
+    )
 
     # zizi
 
@@ -435,6 +577,8 @@ def main(args, resume_preempt=False):
         mixed_precision=mixed_precision,
         betas=betas,
         eps=eps,
+        warmup_steps=scheduler_warmup_steps,
+        total_steps=scheduler_total_steps,
     )
     encoder = DistributedDataParallel(encoder, static_graph=True)
     predictor = DistributedDataParallel(
@@ -445,9 +589,14 @@ def main(args, resume_preempt=False):
         p.requires_grad = False
 
     # -- momentum schedule
+    momentum_total_steps = (
+        int(total_updates)
+        if total_updates is not None
+        else int(ipe * num_epochs * ipe_scale)
+    )
     momentum_scheduler = (
-        ema[0] + i * (ema[1] - ema[0]) / (ipe * num_epochs * ipe_scale)
-        for i in range(int(ipe * num_epochs) + 1)
+        ema[0] + i * (ema[1] - ema[0]) / max(1, momentum_total_steps)
+        for i in range(momentum_total_steps + 1)
     )
     lambda_sched = Lambda_LinearWarmupHold(lambda_value=lambda_value)
 
@@ -520,6 +669,8 @@ def main(args, resume_preempt=False):
 
     trailing_losses = []
     step_count = 0
+    stop_training = False
+    global_update_count = int(start_epoch * ipe)
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
@@ -532,6 +683,10 @@ def main(args, resume_preempt=False):
         data_elapsed_time_meter = AverageMeter()
 
         for itr in range(ipe):
+            if total_updates is not None and global_update_count >= total_updates:
+                stop_training = True
+                break
+
             itr_start_time = time.time()
 
             iter_retries = 0
@@ -579,6 +734,15 @@ def main(args, resume_preempt=False):
 
             clips, masks_enc, masks_pred = load_clips()
             data_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
+
+            for clip in clips:
+                clip_in_chans = int(clip.shape[1])
+                if clip_in_chans != in_chans:
+                    raise ValueError(
+                        f"Input channel mismatch: model.in_chans={in_chans}, "
+                        f"but batch clip has C={clip_in_chans}. "
+                        "Set model.in_chans to match the H5 voxel representation."
+                    )
 
             if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
                 logger.info("Running garbage collection...")
@@ -687,7 +851,12 @@ def main(args, resume_preempt=False):
                     # Context loss
                     if predict_all:
                         distance_weights = compute_mask_distance(
-                            masks_pred, masks_enc, grid_size, offset_context_loss
+                            masks_pred,
+                            masks_enc,
+                            grid_size=grid_size,
+                            offset_context_loss=offset_context_loss,
+                            h_patches=grid_h,
+                            w_patches=grid_w,
                         )
                         if weight_distance_loss:
                             d_weights = distance_weights
@@ -824,12 +993,21 @@ def main(args, resume_preempt=False):
 
             log_stats()
             assert not np.isnan(loss), "loss is nan"
+            global_update_count += 1
+
+        if total_updates is not None and global_update_count >= total_updates:
+            stop_training = True
 
         # -- Save Checkpoint
         logger.info("avg. loss %.3f" % loss_meter.avg)
-        if (epoch + 1) % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):
+        if (epoch + 1) % checkpoint_freq == 0 or epoch == (num_epochs - 1):
             save_checkpoint(epoch + 1, latest_path)
             if save_every_freq > 0 and (epoch + 1) % save_every_freq == 0:
                 save_every_file = f"e{epoch}.pth.tar"
                 save_every_path = os.path.join(folder, save_every_file)
                 save_checkpoint(epoch + 1, save_every_path)
+
+        if stop_training:
+            logger.info(f"Reached total_updates={total_updates}; stopping training.")
+            save_checkpoint(epoch + 1, latest_path)
+            break

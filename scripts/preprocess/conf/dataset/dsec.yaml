@@ -1,0 +1,51 @@
+name: dsec
+
+dataset_root: null
+output_root: null
+
+splits: [train, test]
+output_name: null
+output_suffix: _voxels.h5
+output_subdir: null
+overwrite: false
+
+input_height: 480
+input_width: 640
+downsample_factor: 1
+
+t_bins: 10
+representation: voxel_grid
+event_image_percentile: 99.0
+save_mp4: false
+mp4_fps: null
+split_polarity: true
+accum_time: 50000
+stride_time: null
+start_time_us: null
+window_mode: fixed
+
+image_root: null
+sync_segmentation: false
+segmentation_root: null
+segmentation_subdir: 11classes_renamed
+segmentation_tolerance_us: 0
+
+normalize: true
+output_dtype: float16
+use_trilinear: true
+activity_mode: full
+activity_spatial_patch_size: 16
+activity_temporal_patch_size: 2
+tmp_suffix: .tmp
+num_processes: 1
+
+split_chunk_duration_s: null
+split_output_root: null
+split_copy_batch_size: 8
+split_min_windows_per_chunk: 1
+split_chunk_index_pad: 4
+split_metadata_mode: full
+split_progress_interval_s: 0.0
+split_log_chunk_progress: false
+split_log_dataset_progress: false
+split_delete_source_after_success: false

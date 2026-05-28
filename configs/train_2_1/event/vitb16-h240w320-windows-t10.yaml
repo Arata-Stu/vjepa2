@@ -1,0 +1,127 @@
+app: vjepa_2_1
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 8
+mem_per_gpu: 80G
+folder: /your_folder/pretrain_2_1/event_vitb16_h240w320_windows_t10
+
+data:
+  dataset_type: EventDataset
+  datasets:
+  - /your_data/dsec_h5_half/train
+  - /your_data/m3ed_h5_half/train
+  - /your_data/1mpx_h5_half/train
+  - /your_data/eventscape_h5_half/train
+  datasets_weights: [1.0, 1.0, 1.0, 1.0]
+  batch_size: 8
+  crop_size: [240, 320]
+  patch_size: 16
+  dataset_fpcs: [10, 10, 10, 10]
+  source_window_fpcs: null
+  voxel_time_mode: channels
+  voxel_temporal_bins: null
+  tubelet_size: 2
+  fps: 4
+  frame_sample_rate: 1
+  num_workers: 8
+  persistent_workers: true
+  prefetch_factor: null
+  max_open_h5_files: 32
+  file_pattern: "*.h5"
+  recursive: true
+  pin_mem: true
+
+data_aug:
+  auto_augment: false
+  motion_shift: false
+  random_resize_aspect_ratio: [0.75, 1.3333333333]
+  random_resize_scale: [0.8, 1.0]
+  reprob: 0.0
+  preserve_input_size: true
+  pad_to_hw: [240, 320]
+  pad_value: 0.0
+  interpolation: bilinear
+
+loss:
+  loss_exp: 1.0
+  predict_all: true
+  reg_coeff: 0.0
+  shift_by_n: 0
+  weight_distance_loss: true
+  offset_context_loss: false
+
+img_data: null
+img_mask: null
+
+mask:
+- aspect_ratio: [0.75, 1.5]
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 8
+  spatial_scale: [0.15, 0.15]
+  temporal_scale: [1.0, 1.0]
+- aspect_ratio: [0.75, 1.5]
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 2
+  spatial_scale: [0.7, 0.7]
+  temporal_scale: [1.0, 1.0]
+
+meta:
+  dtype: bfloat16
+  eval_freq: 100
+  load_checkpoint: false
+  read_checkpoint: null
+  checkpoint_freq: 10
+  save_every_freq: -1
+  seed: 239
+  use_sdpa: true
+  sync_gc: false
+
+model:
+  model_name: vit_base
+  in_chans: 20
+  pred_depth: 12
+  pred_num_heads: 12
+  pred_embed_dim: 384
+  uniform_power: true
+  use_mask_tokens: true
+  zero_init_mask_tokens: true
+  use_rope: true
+  use_silu: false
+  use_pred_silu: false
+  wide_silu: true
+  is_causal: false
+  pred_is_causal: false
+  init_type: default
+  img_temporal_dim_size: null
+  n_registers: 0
+  n_registers_predictor: 0
+  has_cls_first: false
+  interpolate_rope: true
+  modality_embedding: false
+  lambda_value_img: 0.5
+  lambda_value_vid: 0.5
+  lambda_progressive: true
+  normalize_predictor: false
+  levels_predictor: 4
+  use_activation_checkpointing: true
+
+optimization:
+  ema: [0.99925, 0.99925]
+  epochs: 1000
+  ipe: null
+  updates_per_epoch: null
+  samples_per_epoch: 8000
+  total_updates: 120000
+  warmup_updates: 10000
+  ipe_scale: 1.0
+  weight_decay: 0.04
+  final_weight_decay: 0.04
+  lr: 0.0006
+  start_lr: 0.0001
+  final_lr: 0.0006
+  warmup: 10
+  use_radamw: false

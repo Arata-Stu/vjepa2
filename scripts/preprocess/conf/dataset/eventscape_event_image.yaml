@@ -1,0 +1,31 @@
+name: eventscape
+
+dataset_root: /media/aten-22/AT_2TB/dataset/EventScape
+output_root: /media/aten-22/AT_2TB/dataset/EventScape_event_image
+
+splits: null
+output_suffix: _voxels.h5
+output_subdir: null
+overwrite: false
+
+input_height: 256
+input_width: 512
+output_height: 256
+output_width: 512
+downsample_factor: 1
+
+t_bins: 1
+representation: event_image
+event_image_percentile: 99.0
+save_mp4: true
+mp4_fps: null
+split_polarity: true
+
+normalize: true
+output_dtype: float16
+use_trilinear: false
+activity_mode: full
+activity_spatial_patch_size: 16
+activity_temporal_patch_size: 2
+tmp_suffix: .tmp
+num_processes: 10

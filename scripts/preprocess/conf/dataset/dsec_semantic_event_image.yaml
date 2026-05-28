@@ -1,0 +1,51 @@
+name: dsec
+
+dataset_root: /media/aten-22/AT_SSD/dataset/dsec
+output_root: /media/aten-22/AT_2TB/dataset/DSEC_semantic_event_image
+
+splits: [train, test]
+output_name: null
+output_suffix: _voxels.h5
+output_subdir: null
+overwrite: false
+
+input_height: 480
+input_width: 640
+downsample_factor: 1
+
+t_bins: 1
+representation: event_image
+event_image_percentile: 99.0
+save_mp4: true
+mp4_fps: null
+split_polarity: true
+accum_time: 50000
+stride_time: null
+start_time_us: null
+window_mode: image_middle
+
+image_root: null
+sync_segmentation: true
+segmentation_root: null
+segmentation_subdir: 11classes
+segmentation_tolerance_us: 5000
+
+normalize: true
+output_dtype: float16
+use_trilinear: false
+activity_mode: full
+activity_spatial_patch_size: 16
+activity_temporal_patch_size: 2
+tmp_suffix: .tmp
+num_processes: 1
+
+split_chunk_duration_s: 20
+split_output_root: /media/aten-22/AT_2TB/dataset/DSEC_semantic_event_image_20s
+split_copy_batch_size: 8
+split_min_windows_per_chunk: 1
+split_chunk_index_pad: 4
+split_metadata_mode: full
+split_progress_interval_s: 0.0
+split_log_chunk_progress: false
+split_log_dataset_progress: false
+split_delete_source_after_success: true
