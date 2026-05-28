@@ -70,7 +70,19 @@ def process_main(rank, fname, world_size, devices):
     logger.info(f"Running... (rank: {rank}/{world_size})")
 
     # Launch the app with loaded config
-    app_main(params["app"], args=params)
+    try:
+        app_main(params["app"], args=params)
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user; shutting down.")
+    finally:
+        try:
+            import torch.distributed as dist
+
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group()
+                logger.info("Destroyed torch distributed process group.")
+        except Exception as exc:
+            logger.warning(f"Failed to destroy process group cleanly: {exc}")
 
 
 if __name__ == "__main__":
@@ -80,5 +92,18 @@ if __name__ == "__main__":
     else:
         num_gpus = len(args.devices)
         mp.set_start_method("spawn")
+        processes = []
         for rank in range(num_gpus):
-            mp.Process(target=process_main, args=(rank, args.fname, num_gpus, args.devices)).start()
+            process = mp.Process(target=process_main, args=(rank, args.fname, num_gpus, args.devices))
+            process.start()
+            processes.append(process)
+        try:
+            for process in processes:
+                process.join()
+        except KeyboardInterrupt:
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+            for process in processes:
+                process.join()
+            raise
