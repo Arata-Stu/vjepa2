@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from setuptools import setup
+from setuptools import find_namespace_packages, setup
 
 NAME = "vjepa2"
 VERSION = "0.0.2"
@@ -24,5 +24,6 @@ if __name__ == "__main__":
         description=DESCRIPTION,
         url=URL,
         python_requires=">=3.11",
+        packages=find_namespace_packages(include=["app*", "src*", "scripts*"]),
         install_requires=get_requirements(),
     )

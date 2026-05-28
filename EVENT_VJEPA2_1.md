@@ -39,6 +39,12 @@ configs/train_2_1/event/vitb16-h240w320-windows-t10.yaml
 configs/train_2_1/event/vitb16-h240w320-bins-t10.yaml
 ```
 
+Run from the repository root with module-style launch:
+
+```bash
+python -m app.main --fname configs/train_2_1/event/vitb16-h480w640-bins-t10.yaml --devices cuda:0
+```
+
 The 480x640 configs pad smaller datasets to `[480, 640]`. The 240x320 configs assume the H5 inputs
 are already at half scale or smaller when `preserve_input_size: true`.
 
