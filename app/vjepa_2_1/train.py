@@ -280,6 +280,7 @@ def main(args, resume_preempt=False):
     use_radamw = cfgs_opt.get("use_radamw", False)
     betas = cfgs_opt.get("betas", (0.9, 0.999))
     eps = cfgs_opt.get("eps", 1.0e-8)
+    grad_clip_norm = cfgs_opt.get("grad_clip_norm", None)
     loss_reg_std_mult = cfgs_opt.get("loss_reg_std_mult", None)
     loss_reg_num_tracking_steps = cfgs_opt.get("loss_reg_num_tracking_steps", 300)
     loss_reg_min_epoch = cfgs_opt.get("loss_reg_min_epoch", 50)
@@ -299,6 +300,10 @@ def main(args, resume_preempt=False):
         warmup_updates = int(warmup_updates)
         if warmup_updates < 0:
             raise ValueError("optimization.warmup_updates must be >= 0")
+    if grad_clip_norm is not None:
+        grad_clip_norm = float(grad_clip_norm)
+        if grad_clip_norm <= 0:
+            raise ValueError("optimization.grad_clip_norm must be > 0 when provided")
     # ----------------------------------------------------------------------- #
 
     np.random.seed(seed)
@@ -907,16 +912,29 @@ def main(args, resume_preempt=False):
                         )
 
                 if run_step:
+                    grad_norm = None
                     if mixed_precision:
                         scaler.scale(loss).backward()
                         scaler.unscale_(optimizer)
                     else:
                         loss.backward()
+                    if grad_clip_norm is not None:
+                        grad_params = [
+                            p
+                            for p in list(encoder.parameters())
+                            + list(predictor.parameters())
+                            if p.requires_grad and p.grad is not None
+                        ]
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            grad_params, grad_clip_norm
+                        )
                     if mixed_precision:
                         scaler.step(optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
+                else:
+                    grad_norm = None
                 optimizer.zero_grad()
 
                 # Step 3. momentum update of target encoder
@@ -941,6 +959,7 @@ def main(args, resume_preempt=False):
                     ),
                     "lambda_context": float(lambda_value_step),
                     "momentum": float(m),
+                    "grad_norm": None if grad_norm is None else float(grad_norm),
                 }
                 return (
                     float(loss.detach().float().item()),
@@ -1054,6 +1073,12 @@ def main(args, resume_preempt=False):
                         global_update_count,
                     )
                     tb_writer.add_scalar("train/momentum", train_metrics["momentum"], global_update_count)
+                    if train_metrics["grad_norm"] is not None:
+                        tb_writer.add_scalar(
+                            "train/grad_norm",
+                            train_metrics["grad_norm"],
+                            global_update_count,
+                        )
                     if train_metrics["loss_context"] is not None:
                         tb_writer.add_scalar(
                             "train/loss_context",

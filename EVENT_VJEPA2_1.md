@@ -54,6 +54,18 @@ tensorboard --logdir /path/to/run/folder/tensorboard --port 6006 --bind_all
 The 480x640 configs pad smaller datasets to `[480, 640]`. The 240x320 configs assume the H5 inputs
 are already at half scale or smaller when `preserve_input_size: true`.
 
+## Event Mask Preset
+
+The event configs use two spatiotemporal mask families instead of the original full-tube-only video
+masking:
+
+- local event-burst masks: many small spatial blocks over short temporal spans
+- broader motion-region masks: fewer larger blocks over medium-to-long temporal spans
+
+For `dataset_fpcs=10` and `tubelet_size=2`, the mask generator sees 5 temporal tokens. Therefore
+`temporal_scale: [0.2, 0.4]` masks roughly 1 to 2 temporal tokens, while `[0.4, 1.0]` mixes
+medium spans and full-tube cases.
+
 ## Scheduler
 
 For roughly 1000 H5 files, prefer update-count-based control:
@@ -62,7 +74,24 @@ For roughly 1000 H5 files, prefer update-count-based control:
 optimization:
   samples_per_epoch: 8000
   total_updates: 120000
-  warmup_updates: 10000
+  warmup_updates: 2000
 ```
 
 This keeps LR/WD/EMA tied to optimizer updates, not accidentally to the number of H5 files.
+
+The event configs use a conservative single-GPU-friendly optimization preset by default:
+
+```yaml
+model:
+  lambda_value_vid: 0.1
+
+optimization:
+  lr: 0.0001
+  start_lr: 0.00001
+  final_lr: 0.00001
+  grad_clip_norm: 1.0
+```
+
+If `train/loss_pred` rises during LR warmup, lower `optimization.lr` first. The original
+`0.0006` video setting is often too aggressive for scratch event training with small per-GPU
+batches and high-resolution voxel inputs.

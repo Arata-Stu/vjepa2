@@ -58,16 +58,16 @@ mask:
   full_complement: false
   max_keep: null
   max_temporal_keep: 1.0
-  num_blocks: 8
-  spatial_scale: [0.15, 0.15]
-  temporal_scale: [1.0, 1.0]
+  num_blocks: 10
+  spatial_scale: [0.08, 0.18]
+  temporal_scale: [0.2, 0.4]
 - aspect_ratio: [0.75, 1.5]
   full_complement: false
   max_keep: null
   max_temporal_keep: 1.0
-  num_blocks: 2
-  spatial_scale: [0.7, 0.7]
-  temporal_scale: [1.0, 1.0]
+  num_blocks: 3
+  spatial_scale: [0.35, 0.6]
+  temporal_scale: [0.4, 1.0]
 
 meta:
   dtype: bfloat16
@@ -107,7 +107,7 @@ model:
   interpolate_rope: true
   modality_embedding: false
   lambda_value_img: 0.5
-  lambda_value_vid: 0.5
+  lambda_value_vid: 0.1
   lambda_progressive: true
   normalize_predictor: false
   levels_predictor: 4
@@ -120,12 +120,13 @@ optimization:
   updates_per_epoch: null
   samples_per_epoch: 8000
   total_updates: 120000
-  warmup_updates: 10000
+  warmup_updates: 2000
   ipe_scale: 1.0
   weight_decay: 0.04
   final_weight_decay: 0.04
-  lr: 0.0006
-  start_lr: 0.0001
-  final_lr: 0.0006
+  lr: 0.0001
+  start_lr: 0.00001
+  final_lr: 0.00001
   warmup: 10
+  grad_clip_norm: 1.0
   use_radamw: false
